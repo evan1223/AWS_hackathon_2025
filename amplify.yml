@@ -4,6 +4,7 @@ frontend:
     preBuild:
       commands:
         - npm ci
+        - npm install @aws-crypto/sha256-js  # Add this line explicitly
     build:
       commands:
         - npm run build
