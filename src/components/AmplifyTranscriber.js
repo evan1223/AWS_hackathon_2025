@@ -11,29 +11,6 @@ if (!isPredictionsProviderAdded) {
   isPredictionsProviderAdded = true;
 }
 
-// Convert Float32 [-1,1] samples to 16-bit PCM
-function convertFloat32ToInt16(buffer) {
-    let l = buffer.length;
-    const result = new Int16Array(l);
-    for (let i = 0; i < l; i++) {
-        let s = Math.max(-1, Math.min(1, buffer[i]));
-        result[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
-    }
-    return result.buffer;
-}
-
-// Merge multiple ArrayBuffers into one
-function mergeBuffers(buffers) {
-    let totalLength = buffers.reduce((acc, b) => acc + b.byteLength, 0);
-    const result = new Uint8Array(totalLength);
-    let offset = 0;
-    buffers.forEach(buffer => {
-        result.set(new Uint8Array(buffer), offset);
-        offset += buffer.byteLength;
-    });
-    return result.buffer;
-}
-
 
 const AmplifyTranscriber = () => {
     const [isRecording, setIsRecording] = useState(false);
@@ -111,30 +88,33 @@ const AmplifyTranscriber = () => {
         try {
             console.log("Processing PCM chunks...");
             setIsProcessing(true);
-
+    
             // Merge all chunks
             const mergedBuffer = mergeBuffers(audioChunksRef.current);
-
+    
             console.log(`Total merged PCM size: ${mergedBuffer.byteLength} bytes`);
-
+    
+            // ✅ Save WAV for debugging (add this line!!)
+            savePCMToWav(mergedBuffer, 16000);
+    
             // Send to AWS
             const result = await Predictions.convert({
                 transcription: {
                     source: {
                         bytes: mergedBuffer,
                     },
-                    language: 'zh-TW',
+                    language: 'zh-TW', // or 'en-US' if debugging
                 }
             });
-
+    
             console.log("AWS Transcription result:", result);
-
+    
             if (result.transcription && result.transcription.fullText) {
                 setFinalTranscript(prev => prev + ' ' + result.transcription.fullText);
             } else {
                 console.warn("Empty transcription result.");
             }
-
+    
             setIsProcessing(false);
         } catch (err) {
             console.error("Processing error:", err);
@@ -156,6 +136,66 @@ const AmplifyTranscriber = () => {
             startRecording();
         }
     };
+    // Convert Float32 [-1,1] samples to 16-bit PCM
+function convertFloat32ToInt16(buffer) {
+    let l = buffer.length;
+    const result = new Int16Array(l);
+    
+    // Normalize
+    let max = 0;
+    for (let i = 0; i < l; i++) {
+        max = Math.max(max, Math.abs(buffer[i]));
+    }
+    const scale = max > 0 ? 1 / max : 1;
+    
+    for (let i = 0; i < l; i++) {
+        let s = buffer[i] * scale;
+        result[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
+    }
+    return result.buffer;
+}
+
+// Merge multiple ArrayBuffers into one
+function mergeBuffers(buffers) {
+    let totalLength = buffers.reduce((acc, b) => acc + b.byteLength, 0);
+    const result = new Uint8Array(totalLength);
+    let offset = 0;
+    buffers.forEach(buffer => {
+        result.set(new Uint8Array(buffer), offset);
+        offset += buffer.byteLength;
+    });
+    return result.buffer;
+}
+
+// Save PCM as WAV file for debugging
+function savePCMToWav(pcmArrayBuffer, sampleRate = 16000) {
+    const wavHeader = new ArrayBuffer(44);
+    const view = new DataView(wavHeader);
+
+    const length = pcmArrayBuffer.byteLength;
+    const totalLength = length + 44 - 8;
+
+    view.setUint32(0, 0x52494646, false); // 'RIFF'
+    view.setUint32(4, totalLength, true);
+    view.setUint32(8, 0x57415645, false); // 'WAVE'
+    view.setUint32(12, 0x666d7420, false); // 'fmt '
+    view.setUint32(16, 16, true); // PCM chunk size
+    view.setUint16(20, 1, true); // Audio format PCM = 1
+    view.setUint16(22, 1, true); // Mono
+    view.setUint32(24, sampleRate, true);
+    view.setUint32(28, sampleRate * 2, true); // Byte rate
+    view.setUint16(32, 2, true); // Block align
+    view.setUint16(34, 16, true); // Bits per sample
+    view.setUint32(36, 0x64617461, false); // 'data'
+    view.setUint32(40, length, true);
+
+    const wavBlob = new Blob([wavHeader, pcmArrayBuffer], { type: 'audio/wav' });
+    const url = URL.createObjectURL(wavBlob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = 'recorded_audio.wav';
+    link.click();
+}
 
     return (
         <div className="transcriber-container">
