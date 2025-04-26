@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { Predictions } from 'aws-amplify';
 
 const AmplifyTranscriber = () => {
@@ -12,13 +12,36 @@ const AmplifyTranscriber = () => {
   const mediaRecorderRef = useRef(null);
   const audioChunksRef = useRef([]);
   const streamRef = useRef(null);
-  
+
+  const stopRecording = useCallback(() => {
+    if (mediaRecorderRef.current && isRecording) {
+      mediaRecorderRef.current.stop();
+      
+      // Process any remaining audio
+      if (audioChunksRef.current.length > 0) {
+        processAudioChunk([...audioChunksRef.current]);
+        audioChunksRef.current = [];
+      }
+      
+      // Clean up media stream
+      if (streamRef.current) {
+        streamRef.current.getTracks().forEach(track => track.stop());
+        streamRef.current = null;
+      }
+      
+      setIsRecording(false);
+      setStatus('Stopped');
+    }
+  }, [isRecording]); // Include isRecording in the dependencies
+
+
+
   // Clean up resources when component unmounts
   useEffect(() => {
     return () => {
       stopRecording();
     };
-  }, []);
+  }, [stopRecording]);
   
   // Start recording audio
   const startRecording = async () => {
@@ -85,28 +108,6 @@ const AmplifyTranscriber = () => {
     } catch (err) {
       console.error('Transcription error:', err);
       // Don't set error here to avoid interrupting recording
-    }
-  };
-  
-  // Stop recording
-  const stopRecording = () => {
-    if (mediaRecorderRef.current && isRecording) {
-      mediaRecorderRef.current.stop();
-      
-      // Process any remaining audio
-      if (audioChunksRef.current.length > 0) {
-        processAudioChunk([...audioChunksRef.current]);
-        audioChunksRef.current = [];
-      }
-      
-      // Clean up media stream
-      if (streamRef.current) {
-        streamRef.current.getTracks().forEach(track => track.stop());
-        streamRef.current = null;
-      }
-      
-      setIsRecording(false);
-      setStatus('Stopped');
     }
   };
   

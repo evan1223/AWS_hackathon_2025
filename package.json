@@ -3,8 +3,8 @@
   "version": "0.1.0",
   "private": true,
   "dependencies": {
+    "@aws-crypto/sha256-js": "^5.2.0",
     "aws-amplify": "^5.3.11",
-    "@aws-crypto/sha256-js": "^5.0.0",  // Add this line
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
     "react-scripts": "5.0.1"
