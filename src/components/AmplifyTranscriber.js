@@ -1,5 +1,17 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
-import { Predictions } from 'aws-amplify';
+import { Amplify, Predictions } from 'aws-amplify';
+import { AmazonAIPredictionsProvider } from '@aws-amplify/predictions';
+import awsconfig from '../aws-exports';
+
+// Configure Amplify and register the Predictions provider
+Amplify.configure(awsconfig);
+
+// Only add the Predictions provider if not already added
+let isPredictionsProviderAdded = false;
+if (!isPredictionsProviderAdded) {
+  Amplify.addPluggable(new AmazonAIPredictionsProvider());
+  isPredictionsProviderAdded = true;
+}
 
 const AmplifyTranscriber = () => {
     const [isRecording, setIsRecording] = useState(false);
@@ -17,13 +29,11 @@ const AmplifyTranscriber = () => {
         if (mediaRecorderRef.current && isRecording) {
             mediaRecorderRef.current.stop();
 
-            // Process any remaining audio
             if (audioChunksRef.current.length > 0) {
                 processAudioChunk([...audioChunksRef.current]);
                 audioChunksRef.current = [];
             }
 
-            // Clean up media stream
             if (streamRef.current) {
                 streamRef.current.getTracks().forEach(track => track.stop());
                 streamRef.current = null;
@@ -32,97 +42,88 @@ const AmplifyTranscriber = () => {
             setIsRecording(false);
             setStatus('Stopped');
         }
-    }, [isRecording]); // Include isRecording in the dependencies
+    }, [isRecording]);
 
-
-
-    // Clean up resources when component unmounts
     useEffect(() => {
         return () => {
             stopRecording();
         };
     }, [stopRecording]);
 
-    // Start recording audio
     const startRecording = async () => {
         try {
             console.log("Starting recording");
             setError(null);
             setStatus('Requesting microphone access...');
 
-            // Get microphone access
             const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-            console.log("\nGot user media:", stream);
+            console.log("Got user media:", stream);
             streamRef.current = stream;
-            
-            // Set up MediaRecorder
-            const mediaRecorder = new MediaRecorder(stream,{
-                mimeType: 'audio/webm'
+
+            const mediaRecorder = new MediaRecorder(stream, {
+                mimeType: 'audio/webm' // or 'audio/wav' if preferred
             });
+
             mediaRecorderRef.current = mediaRecorder;
             audioChunksRef.current = [];
 
-            // Set up data collection
             mediaRecorder.ondataavailable = (e) => {
                 if (e.data.size > 0) {
                     audioChunksRef.current.push(e.data);
 
-                    // For longer recordings, process chunks periodically
                     if (audioChunksRef.current.length >= 5) {
                         processAudioChunk([...audioChunksRef.current]);
                         audioChunksRef.current = [];
                     }
                 }
             };
-            console.log("\nMediaRecorder created:", mediaRecorderRef.current);
 
-            // Start recording
-            mediaRecorder.start(1000); // Collect data every second
+            mediaRecorder.start(1000); // record in 1-second chunks
             setIsRecording(true);
             setStatus('Recording...');
         } catch (err) {
-            console.error("\nRecording error:", error);
+            console.error("Recording error:", err);
             setError(`Failed to start recording: ${err.message}`);
             setStatus('Error');
         }
     };
 
-    // Process audio chunks for transcription
     const processAudioChunk = async (chunks) => {
         try {
             console.log("Processing chunks:", chunks.length);
             setIsProcessing(true);
-
-            // Create blob from audio chunks
+    
             const audioBlob = new Blob(chunks, { type: 'audio/webm' });
-            console.log("\nAudio blob created:", audioBlob.size, "bytes");
-            const audioFile = new File([audioBlob], 'recording.webm');
-
-            console.log("\nSending to AWS Predictions...");
-            // Send to AWS Transcribe via Amplify
+            console.log("Audio blob created:", audioBlob.size, "bytes");
+    
+            // Convert Blob to ArrayBuffer
+            const arrayBuffer = await audioBlob.arrayBuffer();
+    
+            console.log("Sending to AWS Predictions...");
+    
             const result = await Predictions.convert({
                 transcription: {
                     source: {
-                        file: audioFile,
-                    }
+                        bytes: arrayBuffer,  // <<=== Pass bytes, NOT file
+                    },
+                    language: 'zh-TW',
                 }
             });
-            console.log("\nTranscription result:", result);
-
-            // Update transcript
-            if (result.transcription.fullText) {
+    
+            console.log("Transcription result:", result);
+    
+            if (result.transcription && result.transcription.fullText) {
                 setFinalTranscript(prev => prev + ' ' + result.transcription.fullText);
             }
-
+    
             setIsProcessing(false);
         } catch (err) {
-            console.error("\nProcessing error:", error);
-            console.error('Transcription error:', err);
-            // Don't set error here to avoid interrupting recording
+            console.error("Processing error:", err);
+            setError(`Transcription failed: ${err.message}`);
+            setIsProcessing(false);
         }
     };
 
-    // Clear transcripts
     const clearTranscripts = () => {
         setPartialTranscript('');
         setFinalTranscript('');
@@ -157,11 +158,6 @@ const AmplifyTranscriber = () => {
             </div>
 
             <div className="transcript-panel">
-                <div className="transcript-container">
-                    <h3>Partial Transcript:</h3>
-                    <div className="partial-transcript">{partialTranscript}</div>
-                </div>
-
                 <div className="transcript-container">
                     <h3>Final Transcript:</h3>
                     <div className="final-transcript">{finalTranscript}</div>
