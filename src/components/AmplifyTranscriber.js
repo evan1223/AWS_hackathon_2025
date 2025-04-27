@@ -1,15 +1,10 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
-import { Amplify, Predictions } from 'aws-amplify';
-import { AmazonAIPredictionsProvider } from '@aws-amplify/predictions';
+import { Amplify } from 'aws-amplify';
+import { Predictions } from '@aws-amplify/predictions';
 import awsconfig from '../aws-exports';
 
-// Configure Amplify once
+// Configure Amplify
 Amplify.configure(awsconfig);
-let isPredictionsProviderAdded = false;
-if (!isPredictionsProviderAdded) {
-    Amplify.addPluggable(new AmazonAIPredictionsProvider());
-    isPredictionsProviderAdded = true;
-}
 
 const AmplifyTranscriber = () => {
     const [isRecording, setIsRecording] = useState(false);
@@ -17,6 +12,7 @@ const AmplifyTranscriber = () => {
     const [status, setStatus] = useState('Ready');
     const [finalTranscript, setFinalTranscript] = useState('');
     const [error, setError] = useState(null);
+    const [testMode, setTestMode] = useState(false); // 🎯 是否啟用「上傳測試檔模式」
 
     const audioContextRef = useRef(null);
     const mediaStreamRef = useRef(null);
@@ -53,10 +49,8 @@ const AmplifyTranscriber = () => {
             setStatus('Requesting microphone access...');
 
             const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-
             console.log("Microphone tracks:", stream.getAudioTracks());
 
-            // (Optional) Play mic audio live
             const audioElement = new Audio();
             audioElement.srcObject = stream;
             audioElement.play();
@@ -69,8 +63,7 @@ const AmplifyTranscriber = () => {
 
             const source = audioContext.createMediaStreamSource(stream);
 
-            // 🚀 NEW: Use AudioWorkletNode instead of ScriptProcessorNode
-            await audioContext.audioWorklet.addModule('/worklet-processor.js');  // Make sure it's public/worklet-processor.js
+            await audioContext.audioWorklet.addModule('/worklet-processor.js');
 
             const micProcessor = new AudioWorkletNode(audioContext, 'mic-processor');
 
@@ -82,9 +75,7 @@ const AmplifyTranscriber = () => {
             };
 
             source.connect(micProcessor);
-            // (No need to connect micProcessor to audioContext.destination unless you want processed audio playback)
-
-            scriptProcessorRef.current = micProcessor; // reuse same ref for stopping later
+            scriptProcessorRef.current = micProcessor;
 
             setIsRecording(true);
             setStatus('Recording...');
@@ -95,54 +86,67 @@ const AmplifyTranscriber = () => {
         }
     };
 
-
-    const processAudioChunk = async () => {
+    const processRecordedAudio = async () => {
         try {
-            console.log("Processing PCM chunks...");
+            console.log("Processing recorded mic PCM chunks...");
             setIsProcessing(true);
 
-            // Merge all chunks
             const mergedBuffer = mergeBuffers(audioChunksRef.current);
             console.log(`Total merged PCM size: ${mergedBuffer.byteLength} bytes`);
 
-            // Show first 20 bytes for debug
-            const firstBytes = new Uint8Array(mergedBuffer).slice(0, 20);
-            console.log("First 20 bytes of PCM:", firstBytes);
-
-            // Save WAV for debugging
             savePCMToWav(mergedBuffer);
 
-            console.log("Sending merged buffer to AWS Predictions...");
-
-            // Send to AWS
             const result = await Predictions.convert({
                 transcription: {
-                    source: {
-                        bytes: mergedBuffer,
-                    },
-                    language: 'zh-TW', // or 'en-US'
+                    source: { bytes: mergedBuffer },
+                    language: 'zh-TW',
                 }
             });
 
-            console.log("AWS Transcription result:", result);
+            console.log("AWS Transcription result from recorded mic:", result);
 
-            if (result.transcription && result.transcription.fullText) {
+            if (result.transcription?.fullText) {
                 setFinalTranscript(prev => prev + ' ' + result.transcription.fullText);
             } else {
-                console.warn("Empty transcription result received.");
+                console.warn("Empty transcription result from recorded mic.");
             }
 
             setIsProcessing(false);
         } catch (err) {
-            console.error("Predictions.convert error:", err);
+            console.error("Error processing recorded mic audio:", err);
+            setError(`Recorded audio transcription failed: ${err.message}`);
+            setIsProcessing(false);
+        }
+    };
 
-            if (err.response) {
-                console.error("AWS error response body:", err.response);
+    const processUploadedTestAudio = async () => {
+        try {
+            console.log("Debug mode: loading hardcoded test.wav file...");
+            setIsProcessing(true);
+
+            const response = await fetch('/test.wav');
+            const arrayBuffer = await response.arrayBuffer();
+            console.log("Loaded hardcoded WAV file. Size:", arrayBuffer.byteLength, "bytes");
+            console.log("the WAV file: ",arrayBuffer);
+            const result = await Predictions.convert({
+                transcription: {
+                    source: { bytes: arrayBuffer },
+                    language: 'zh-TW',
+                }
+            });
+
+            console.log("AWS Transcription result from uploaded file:", result);
+
+            if (result.transcription?.fullText) {
+                setFinalTranscript(prev => prev + ' ' + result.transcription.fullText);
             } else {
-                console.error("No detailed AWS error response available.");
+                console.warn("Empty transcription result from uploaded file.");
             }
 
-            setError(`Transcription failed: ${err.message}`);
+            setIsProcessing(false);
+        } catch (err) {
+            console.error("Error processing uploaded file:", err);
+            setError(`Uploaded file transcription failed: ${err.message}`);
             setIsProcessing(false);
         }
     };
@@ -154,11 +158,19 @@ const AmplifyTranscriber = () => {
     const handleRecordButton = async () => {
         if (isRecording) {
             stopRecording();
-            await processAudioChunk();
+            if (testMode) {
+                await processUploadedTestAudio();
+            } else {
+                await processRecordedAudio();
+            }
         } else {
             audioChunksRef.current = [];
             startRecording();
         }
+    };
+
+    const toggleTestMode = () => {
+        setTestMode(prev => !prev);
     };
 
     return (
@@ -171,7 +183,7 @@ const AmplifyTranscriber = () => {
                     className={isRecording ? 'stop-button' : 'start-button'}
                     disabled={isProcessing}
                 >
-                    {isRecording ? 'Stop Recording' : 'Start Recording'}
+                    {isRecording ? 'Stop & Transcribe' : 'Start Recording'}
                 </button>
 
                 <button
@@ -181,12 +193,21 @@ const AmplifyTranscriber = () => {
                 >
                     Clear Transcripts
                 </button>
+
+                <button
+                    onClick={toggleTestMode}
+                    className="mode-button"
+                    disabled={isRecording || isProcessing}
+                >
+                    {testMode ? 'Switch to Mic Mode' : 'Switch to Upload Mode'}
+                </button>
             </div>
 
             <div className="status-panel">
                 <p>Status: <span className="status-text">{status}</span></p>
                 {isProcessing && <p>Processing audio... Please wait...</p>}
                 {error && <p className="error-message">Error: {error}</p>}
+                <p>Mode: {testMode ? 'Upload test.wav' : 'Live Microphone'}</p>
             </div>
 
             <div className="transcript-panel">
